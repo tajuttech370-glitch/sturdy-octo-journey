@@ -1,0 +1,93 @@
+name: Windows RDP Access
+
+on:
+  workflow_dispatch: # Manual trigger only
+
+jobs:
+  windows-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600 # 60 hour maximum
+
+    steps:
+    - name: Configure RDP Settings
+      run: |
+        Write-Host "=== CONFIGURING RDP SETTINGS ==="
+        
+        # Enable Remote Desktop
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+        
+        # Disable NLA for easier connection
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+        
+        # Configure Windows Firewall
+        netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+        
+        # Restart Terminal Services
+        Restart-Service -Name TermService -Force
+        
+        Write-Host "RDP configured and enabled"
+
+    - name: Create RDP User with Secure Password
+      run: |
+        Write-Host "=== CREATING RDP USER ==="
+        
+        # Generate secure random password
+        $password = -join ((65..90) + (97..122) + (48..57) + (33..47) + (58..64) + (91..96) + (123..126) | Get-Random -Count 16 | ForEach-Object {[char]$_})
+        
+        Write-Host "Generated password: $password"
+        
+        $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+        
+        # Create user with password
+        New-LocalUser -Name "RDPUser" -Password $securePassword -AccountNeverExpires
+        
+        # Add to required groups
+        Add-LocalGroupMember -Group "Administrators" -Member "RDPUser"
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDPUser"
+        
+        # Store credentials in environment
+        echo "RDP_USER=RDPUser" >> $env:GITHUB_ENV
+        echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+        
+        Write-Host "RDP user created successfully"
+        Write-Host "Username: RDPUser"
+        Write-Host "Password: $password"
+
+    - name: Install Cloudflared
+      run: |
+        Write-Host "=== INSTALLING CLOUDFLARED ==="
+        
+        # Download cloudflared
+        Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
+        
+        Write-Host "Cloudflared downloaded"
+
+    - name: Start Cloudflare Tunnel for RDP
+      run: |
+        Write-Host "=== CLOUDFLARE TUNNEL STARTING ==="
+        Write-Host "RDP Credentials:"
+        Write-Host "Username: $env:RDP_USER"
+        Write-Host "Password: $env:RDP_PASSWORD"
+        Write-Host ""
+        Write-Host "The tunnel will provide a URL for RDP connection"
+        Write-Host "Keep this workflow running and connect via the URL below"
+        Write-Host ""
+        
+        # Start cloudflared tunnel for RDP
+        .\cloudflared.exe tunnel --url rdp://localhost:3389
+
+    - name: Keep Runner Active
+      run: |
+        Write-Host "=== RDP SESSION ACTIVE ==="
+        Write-Host "RDP is now accessible via Cloudflare Tunnel"
+        Write-Host "Username: $env:RDP_USER" 
+        Write-Host "Password: $env:RDP_PASSWORD"
+        Write-Host ""
+        Write-Host "The runner will stay active until manually stopped"
+        Write-Host "Use Ctrl+C in the workflow to terminate when done"
+        
+        # Keep the runner active
+        while ($true) {
+            Write-Host "[$(Get-Date)] RDP session active - workflow running..."
+            Start-Sleep -Seconds 300
+        }
